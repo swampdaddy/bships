@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>On-Chain Battleship Demo</title>
+  <!-- eosjs library -->
+  <script src="https://cdn.jsdelivr.net/npm/eosjs@22.0.0/dist/eosjs.min.js"></script>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    label { display: inline-block; width: 120px; }
+    input[type="text"], input[type="password"] { width: 250px; }
+    .section { border: 1px solid #ccc; padding: 10px; margin: 15px 0; }
+    .title { font-weight: bold; margin-bottom: 5px; }
+    .grid { display: grid; grid-template-columns: repeat(10, 20px); grid-gap: 2px; margin-top: 10px; }
+    .cell { width: 20px; height: 20px; border: 1px solid #999; text-align: center; line-height: 20px; cursor: pointer; }
+    .cell.ship { background-color: #666; color: #fff; }
+    .cell.hit  { background-color: red; color: #fff; }
+  </style>
+</head>
+<body>
+  <h1>On-Chain Battleship (Demo Front-End)</h1>
+  <p>Connect to your local Antelope node and interact with the <code>battleship</code> contract.</p>
+
+  <!-- =========================
+       CONNECTION & AUTH SECTION
+       ========================= -->
+  <div class="section">
+    <div class="title">Connection & Auth</div>
+    <label>RPC Endpoint:</label>
+    <input type="text" id="rpcEndpoint" value="http://127.0.0.1:8888" /><br /><br />
+
+    <label>Chain ID:</label>
+    <input type="text" id="chainId" value="<YOUR_LOCAL_CHAIN_ID>" />
+    <p style="font-size: 0.9em;">
+      Replace <strong>&lt;YOUR_LOCAL_CHAIN_ID&gt;</strong> with the actual chain ID of your local testnet.
+      (You can find this by querying <code>cleos get info</code>.)
+    </p>
+
+    <label>Private Key:</label>
+    <input type="password" id="privateKey" placeholder="Development Key (not secure)" /><br /><br />
+
+    <button id="btnConnect" onclick="connect()">Connect to Node</button>
+    <div id="connectionStatus"></div>
+  </div>
+
+  <!-- =========================
+       GAME ACTIONS SECTION
+       ========================= -->
+  <div class="section">
+    <div class="title">Game Actions</div>
+
+    <label>Contract Account:</label>
+    <input type="text" id="contractName" value="battleshipacc" /><br /><br />
+
+    <label>Game ID:</label>
+    <input type="text" id="gameId" value="0" /><br /><br />
+
+    <!-- create -->
+    <h3>Create Game</h3>
+    <label>Player1:</label>
+    <input type="text" id="createPlayer1" value="alice" />
+    <br />
+    <label>Player2:</label>
+    <input type="text" id="createPlayer2" value="bob" />
+    <br />
+    <button onclick="createGame()">Create</button>
+    <br/><br/>
+
+    <!-- commit -->
+    <h3>Commit Board Hash</h3>
+    <label>Player:</label>
+    <input type="text" id="commitPlayer" value="alice" />
+    <br />
+    <label>Board Hash:</label>
+    <input type="text" id="commitHash" placeholder="Sha256 hex string" />
+    <br />
+    <button onclick="commitBoard()">Commit</button>
+    <br/><br/>
+
+    <!-- start game -->
+    <h3>Start Game</h3>
+    <button onclick="startGame()">Start</button>
+    <br/><br/>
+
+    <!-- fire -->
+    <h3>Fire Shot</h3>
+    <label>Row:</label>
+    <input type="number" id="fireRow" value="3" />
+    <br />
+    <label>Col:</label>
+    <input type="number" id="fireCol" value="4" />
+    <br />
+    <button onclick="fireShot()">Fire</button>
+    <br/><br/>
+
+    <!-- reveal -->
+    <h3>Reveal</h3>
+    <label>Player:</label>
+    <input type="text" id="revealPlayer" value="alice" />
+    <br />
+    <label>Board String:</label>
+    <input type="text" id="revealBoard" placeholder="100 chars (X or .)" />
+    <br />
+    <label>Salt:</label>
+    <input type="text" id="revealSalt" placeholder="Random secret salt" />
+    <br />
+    <button onclick="revealBoard()">Reveal</button>
+  </div>
+
+  <!-- =========================
+       OPTIONAL SAMPLE BOARD
+       ========================= -->
+  <div class="section">
+    <div class="title">Local Board Interface (Optional Visual)</div>
+    <p>
+      Click cells to mark them as 'X' or '.'.
+      This does NOT auto-submit anything; it’s just a helper to build a 10x10 string.
+    </p>
+    <div id="boardGrid" class="grid"></div>
+    <br />
+    <label>Generated Board String:</label><br/>
+    <textarea id="boardStringOutput" rows="3" cols="60" readonly></textarea><br/>
+    <button onclick="copyBoardString()">Copy to Reveal Board Field</button>
+  </div>
+
+  <script>
+    // Globals
+    let rpc, api;
+    let connected = false;
+
+    // Create a 10x10 grid in the DOM
+    const boardGrid = document.getElementById('boardGrid');
+    const rows = 10;
+    const cols = 10;
+    const cells = [];
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const cell = document.createElement('div');
+        cell.classList.add('cell');
+        cell.dataset.state = '.'; // '.' means water, 'X' means ship
+        cell.addEventListener('click', () => {
+          toggleCell(cell);
+        });
+        boardGrid.appendChild(cell);
+        cells.push(cell);
+      }
+    }
+
+    function toggleCell(cell) {
+      if (cell.dataset.state === '.') {
+        cell.dataset.state = 'X';
+        cell.classList.add('ship');
+      } else {
+        cell.dataset.state = '.';
+        cell.classList.remove('ship');
+      }
+      updateBoardString();
+    }
+
+    function updateBoardString() {
+      let str = '';
+      for (let cell of cells) {
+        str += cell.dataset.state;
+      }
+      document.getElementById('boardStringOutput').value = str;
+    }
+
+    function copyBoardString() {
+      const txt = document.getElementById('boardStringOutput').value;
+      document.getElementById('revealBoard').value = txt;
+    }
+
+    // -------------------------------
+    // Connect to local node with EOSJS
+    // -------------------------------
+    async function connect() {
+      const endpoint = document.getElementById('rpcEndpoint').value.trim();
+      const chainId = document.getElementById('chainId').value.trim();
+      const pk = document.getElementById('privateKey').value.trim();
+
+      if (!endpoint || !chainId || !pk) {
+        alert('Please enter endpoint, chain ID, and a (test) private key.');
+        return;
+      }
+
+      try {
+        rpc = new eosjs.JsonRpc(endpoint);
+        const signatureProvider = new eosjs.JsSignatureProvider([pk]);
+        api = new eosjs.Api({
+          rpc,
+          signatureProvider,
+          chainId,
+          textDecoder: new TextDecoder(),
+          textEncoder: new TextEncoder()
+        });
+
+        // Test a simple call
+        const info = await rpc.get_info();
+        console.log('Node Info:', info);
+
+        document.getElementById('connectionStatus').innerText = 'Connected to: ' + info.server_version_string;
+        connected = true;
+      } catch (err) {
+        console.error(err);
+        document.getElementById('connectionStatus').innerText = 'Connection failed';
+      }
+    }
+
+    // -------------------------------
+    // Contract Action Helpers
+    // -------------------------------
+    async function createGame() {
+      if (!connected) return alert('Not connected. Please connect first.');
+      const contract = document.getElementById('contractName').value;
+      const player1 = document.getElementById('createPlayer1').value;
+      const player2 = document.getElementById('createPlayer2').value;
+
+      try {
+        const result = await api.transact({
+          actions: [{
+            account: contract,
+            name: 'create',
+            authorization: [{ actor: player1, permission: 'active' }],
+            data: {
+              player1,
+              player2
+            }
+          }]
+        }, { blocksBehind: 3, expireSeconds: 30 });
+
+        console.log('createGame result:', result);
+        alert('Game created. Transaction ID: ' + result.transaction_id);
+      } catch (err) {
+        console.error(err);
+        alert('createGame failed: ' + err.message);
+      }
+    }
+
+    async function commitBoard() {
+      if (!connected) return alert('Not connected. Please connect first.');
+      const contract = document.getElementById('contractName').value;
+      const game_id = parseInt(document.getElementById('gameId').value, 10);
+      const player = document.getElementById('commitPlayer').value;
+      const board_hash = document.getElementById('commitHash').value.trim();
+
+      try {
+        const result = await api.transact({
+          actions: [{
+            account: contract,
+            name: 'commit',
+            authorization: [{ actor: player, permission: 'active' }],
+            data: {
+              game_id,
+              player,
+              board_hash
+            }
+          }]
+        }, { blocksBehind: 3, expireSeconds: 30 });
+
+        console.log('commitBoard result:', result);
+        alert('Commit successful. Tx: ' + result.transaction_id);
+      } catch (err) {
+        console.error(err);
+        alert('commitBoard failed: ' + err.message);
+      }
+    }
+
+    async function startGame() {
+      if (!connected) return alert('Not connected. Please connect first.');
+      const contract = document.getElementById('contractName').value;
+      const game_id = parseInt(document.getElementById('gameId').value, 10);
+      // We'll assume only player1 can start the game, so let's just use createPlayer1 for auth
+      const player1 = document.getElementById('createPlayer1').value;
+
+      try {
+        const result = await api.transact({
+          actions: [{
+            account: contract,
+            name: 'startgame',
+            authorization: [{ actor: player1, permission: 'active' }],
+            data: { game_id }
+          }]
+        }, { blocksBehind: 3, expireSeconds: 30 });
+
+        console.log('startGame result:', result);
+        alert('Game started. Tx: ' + result.transaction_id);
+      } catch (err) {
+        console.error(err);
+        alert('startGame failed: ' + err.message);
+      }
+    }
+
+    async function fireShot() {
+      if (!connected) return alert('Not connected. Please connect first.');
+      const contract = document.getElementById('contractName').value;
+      const game_id = parseInt(document.getElementById('gameId').value, 10);
+      const row = parseInt(document.getElementById('fireRow').value, 10);
+      const col = parseInt(document.getElementById('fireCol').value, 10);
+
+      // We'll assume the next_turn is the one we created with (for demonstration)
+      // In a real front-end, you'd fetch "next_turn" from table data
+      const firingPlayer = document.getElementById('commitPlayer').value;
+
+      try {
+        const result = await api.transact({
+          actions: [{
+            account: contract,
+            name: 'fire',
+            authorization: [{ actor: firingPlayer, permission: 'active' }],
+            data: { game_id, row, col }
+          }]
+        }, { blocksBehind: 3, expireSeconds: 30 });
+
+        console.log('fireShot result:', result);
+        alert(`Fired at (${row},${col}). Tx: ` + result.transaction_id);
+      } catch (err) {
+        console.error(err);
+        alert('fireShot failed: ' + err.message);
+      }
+    }
+
+    async function revealBoard() {
+      if (!connected) return alert('Not connected. Please connect first.');
+      const contract = document.getElementById('contractName').value;
+      const game_id = parseInt(document.getElementById('gameId').value, 10);
+      const player = document.getElementById('revealPlayer').value;
+      const board_str = document.getElementById('revealBoard').value;
+      const salt = document.getElementById('revealSalt').value;
+
+      try {
+        const result = await api.transact({
+          actions: [{
+            account: contract,
+            name: 'reveal',
+            authorization: [{ actor: player, permission: 'active' }],
+            data: {
+              game_id,
+              player,
+              board_str,
+              salt
+            }
+          }]
+        }, { blocksBehind: 3, expireSeconds: 30 });
+
+        console.log('revealBoard result:', result);
+        alert('Reveal done. Tx: ' + result.transaction_id);
+      } catch (err) {
+        console.error(err);
+        alert('revealBoard failed: ' + err.message);
+      }
+    }
+  </script>
+</body>
+</html>
